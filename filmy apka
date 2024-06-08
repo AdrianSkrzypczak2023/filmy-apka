@@ -1,0 +1,185 @@
+import pandas as pd
+import numpy as np
+from scipy.spatial.distance import pdist, squareform
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import threading
+
+class MovieRecommenderApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("System rekomendacji filmów")
+        
+        # Ustawienia okna
+        window_width = 600
+        window_height = 400
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        position_top = int(screen_height/2 - window_height/2)
+        position_right = int(screen_width/2 - window_width/2)
+        self.root.geometry(f"{window_width}x{window_height}+{position_right}+{position_top}")
+        
+        self.label = tk.Label(root, text="Wybierz akcję:", font=("Arial", 14))
+        self.label.pack(pady=20)
+
+        self.button_new = tk.Button(root, text="Utwórz nowy plik CSV", command=self.on_generate_new, font=("Arial", 12))
+        self.button_new.pack(pady=10)
+
+        self.label_existing = tk.Label(root, text="Załaduj istniejące pliki:", font=("Arial", 14))
+        self.label_existing.pack(pady=20)
+        
+        self.button_load_movies = tk.Button(root, text="Wybierz plik movies.csv", command=self.on_load_movies, font=("Arial", 12))
+        self.button_load_movies.pack(pady=10)
+        
+        self.button_load_ratings = tk.Button(root, text="Wybierz plik ratings.csv", command=self.on_load_ratings, font=("Arial", 12))
+        self.button_load_ratings.pack(pady=10)
+        
+        self.label_custom = tk.Label(root, text="Załaduj własny plik:", font=("Arial", 14))
+        self.label_custom.pack(pady=20)
+        
+        self.button_load_custom = tk.Button(root, text="Wybierz własny plik", command=self.on_load_custom, font=("Arial", 12))
+        self.button_load_custom.pack(pady=10)
+
+        self.progress_label = tk.Label(root, text="", font=("Arial", 12))
+        self.progress_label.pack(pady=20)
+        
+        self.movies_file_path = None
+        self.ratings_file_path = None
+        self.custom_file_path = None
+
+    def on_generate_new(self):
+        file_path = self.generate_and_save_csv()
+        if file_path:
+            ratings = pd.read_csv(file_path)
+            self.process_ratings_threaded(ratings)
+
+    def on_load_movies(self):
+        self.movies_file_path = filedialog.askopenfilename(title="Wybierz plik movies.csv", filetypes=[("CSV files", "*.csv")])
+        if self.movies_file_path:
+            messagebox.showinfo("Sukces", f"Plik 'movies.csv' został załadowany z: {self.movies_file_path}")
+        else:
+            messagebox.showwarning("Błąd", "Nie wybrano pliku 'movies.csv'.")
+
+    def on_load_ratings(self):
+        self.ratings_file_path = filedialog.askopenfilename(title="Wybierz plik ratings.csv", filetypes=[("CSV files", "*.csv")])
+        if self.ratings_file_path:
+            messagebox.showinfo("Sukces", f"Plik 'ratings.csv' został załadowany z: {self.ratings_file_path}")
+        else:
+            messagebox.showwarning("Błąd", "Nie wybrano pliku 'ratings.csv'.")
+
+    def on_load_custom(self):
+        self.custom_file_path = filedialog.askopenfilename(title="Wybierz własny plik CSV", filetypes=[("CSV files", "*.csv")])
+        if self.custom_file_path:
+            messagebox.showinfo("Sukces", f"Własny plik został załadowany z: {self.custom_file_path}")
+            try:
+                ratings = pd.read_csv(self.custom_file_path)
+                self.process_ratings_threaded(ratings)
+            except Exception as e:
+                messagebox.showerror("Błąd", f"Wystąpił problem z przetwarzaniem pliku: {e}")
+        else:
+            messagebox.showwarning("Błąd", "Nie wybrano własnego pliku.")
+
+    def generate_and_save_csv(self):
+        num_users = 100
+        num_movies = 1000
+        num_ratings = 10000
+
+        np.random.seed(42)  # Dla powtarzalności wyników
+
+        user_ids = np.random.randint(1, num_users + 1, size=num_ratings)
+        movie_ids = np.random.randint(1, num_movies + 1, size=num_ratings)
+        ratings = np.random.randint(1, 6, size=num_ratings)  # Oceny w skali 1-5
+
+        ratings_data = pd.DataFrame({
+            'userId': user_ids,
+            'movieId': movie_ids,
+            'rating': ratings
+        })
+
+        # Usunięcie duplikatów
+        ratings_data.drop_duplicates(subset=['userId', 'movieId'], inplace=True)
+
+        # Wywołanie okna dialogowego do wyboru ścieżki do zapisu pliku
+        file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+        
+        if file_path:
+            ratings_data.to_csv(file_path, index=False)
+            messagebox.showinfo("Sukces", f"Plik został zapisany w: {file_path}")
+            return file_path
+        else:
+            messagebox.showwarning("Brak ścieżki", "Nie wybrano ścieżki do zapisu pliku.")
+            return None
+
+    def calculate_pearson_similarity(self, ratings_matrix):
+        mean_user_rating = ratings_matrix.mean(axis=1)
+        ratings_diff = ratings_matrix.T - mean_user_rating
+        similarity_matrix = 1 - squareform(pdist(ratings_diff.T, 'cosine'))
+        return similarity_matrix
+
+    def predict_ratings(self, user_id, similar_users, ratings_matrix, user_similarity):
+        user_ratings = ratings_matrix.loc[user_id]
+        weighted_sum = np.zeros(ratings_matrix.shape[1])
+        similarity_sum = np.zeros(ratings_matrix.shape[1])
+        
+        for similar_user in similar_users:
+            similarity = user_similarity[user_id-1, similar_user-1]
+            weighted_sum += similarity * ratings_matrix.loc[similar_user]
+            similarity_sum += similarity
+        
+        predicted_ratings = weighted_sum / (similarity_sum + 1e-9)
+        return predicted_ratings
+
+    def recommend_movie(self, user_id, predicted_ratings, ratings_matrix, movies=None):
+        user_ratings = ratings_matrix.loc[user_id]
+        unrated_movies = user_ratings[user_ratings == 0].index
+        recommended_movie_id = unrated_movies[np.argmax(predicted_ratings[unrated_movies])]
+        
+        if movies is not None:
+            recommended_movie_title = movies[movies['movieId'] == recommended_movie_id]['title'].values[0]
+            return recommended_movie_title
+        else:
+            return recommended_movie_id
+
+    def process_ratings_threaded(self, ratings, movies=None):
+        thread = threading.Thread(target=self.process_ratings, args=(ratings, movies))
+        thread.start()
+
+    def process_ratings(self, ratings, movies=None):
+        self.progress_label.config(text="Przetwarzanie danych...")
+        if ratings is not None:
+            # Usuń duplikaty, jeśli występują
+            ratings.drop_duplicates(subset=['userId', 'movieId'], inplace=True)
+
+            # Utwórz macierz użytkownik x film
+            ratings_matrix = ratings.pivot(index='userId', columns='movieId', values='rating')
+            ratings_matrix.fillna(0, inplace=True)
+
+            # Oblicz macierz podobieństwa
+            user_similarity_pearson = self.calculate_pearson_similarity(ratings_matrix)
+
+            # Usuń podobieństwo między tymi samymi użytkownikami
+            np.fill_diagonal(user_similarity_pearson, 0)
+
+            # Znajdź 10 najbardziej podobnych użytkowników do użytkownika X (przykładowo userId=1)
+            user_id = 1
+            similar_users = np.argsort(-user_similarity_pearson[user_id-1])[:10] + 1  # Dodajemy 1, ponieważ indeksy w macierzy zaczynają się od 0
+
+            # Przewidź oceny dla użytkownika
+            predicted_ratings = self.predict_ratings(user_id, similar_users, ratings_matrix, user_similarity_pearson)
+
+            # Zarekomenduj film
+            recommended_movie = self.recommend_movie(user_id, predicted_ratings, ratings_matrix, movies)
+            
+            if movies is not None:
+                messagebox.showinfo("Rekomendacja", f"Rekomendowany film dla użytkownika {user_id}: {recommended_movie}")
+            else:
+                messagebox.showinfo("Rekomendacja", f"Rekomendowany film dla użytkownika {user_id}: ID {recommended_movie}")
+            
+            self.progress_label.config(text="Przetwarzanie zakończone")
+        else:
+            self.progress_label.config(text="")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MovieRecommenderApp(root)
+    root.mainloop()
